@@ -13,6 +13,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -33,14 +35,17 @@ jobs:
         id: summary
         run: |
           git add -A docs amc_all_documentation.md
+          status=$(git diff --cached --name-status -- docs)
+          echo "added=$(grep -c '^A' <<<"$status" || true)" >> "$GITHUB_OUTPUT"
+          echo "modified=$(grep -c '^M' <<<"$status" || true)" >> "$GITHUB_OUTPUT"
+          echo "deleted=$(grep -c '^D' <<<"$status" || true)" >> "$GITHUB_OUTPUT"
           {
             echo 'body<<END_OF_BODY'
             echo 'AMC公式ドキュメントに変更がありました。差分は「Files changed」で確認できます。'
             echo ''
             echo '| 種類 | ページ |'
             echo '| --- | --- |'
-            git diff --cached --name-status -- docs \
-              | sed -E 's#^A\tdocs/#| 追加 | #; s#^M\tdocs/#| 変更 | #; s#^D\tdocs/#| 削除 | #; s#$# |#'
+            sed -E 's#^A\tdocs/#| 追加 | #; s#^M\tdocs/#| 変更 | #; s#^D\tdocs/#| 削除 | #; s#$# |#' <<<"$status"
             echo ''
             echo 'マージ後、amc_all_documentation.md をダウンロードし、ドライブの既存ファイルに「新しい版」としてアップロードしてください。'
             echo 'END_OF_BODY'
@@ -48,6 +53,7 @@ jobs:
           git reset -q
 
       - name: 変更があればPRを作成
+        id: pr
         uses: peter-evans/create-pull-request@v7
         with:
           branch: docs-update
@@ -58,3 +64,18 @@ jobs:
           commit-message: AMC公式ドキュメントの更新
           title: AMC公式ドキュメントの更新
           body: ${{ steps.summary.outputs.body }}
+
+      - name: Slackに通知（変更あり）
+        if: env.SLACK_WEBHOOK_URL != '' && (steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated')
+        run: |
+          text=$(printf '📄 AMC公式ドキュメントに変更がありました\n追加 %s ／ 変更 %s ／ 削除 %s\nPR：%s' \
+            "${{ steps.summary.outputs.added }}" "${{ steps.summary.outputs.modified }}" \
+            "${{ steps.summary.outputs.deleted }}" "${{ steps.pr.outputs.pull-request-url }}")
+          jq -n --arg text "$text" '{text: $text}' | curl -sS -X POST -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL"
+
+      - name: Slackに通知（取得失敗）
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        run: |
+          text=$(printf '⚠️ AMCドキュメントの週次チェックが失敗しました\nログ：%s' \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          jq -n --arg text "$text" '{text: $text}' | curl -sS -X POST -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL"
