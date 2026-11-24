@@ -54,23 +54,39 @@ jobs:
 
       - name: 変更があればPRを作成
         id: pr
-        uses: peter-evans/create-pull-request@v7
-        with:
-          branch: docs-update
-          delete-branch: true
-          add-paths: |
-            docs/**
-            amc_all_documentation.md
-          commit-message: AMC公式ドキュメントの更新
-          title: AMC公式ドキュメントの更新
-          body: ${{ steps.summary.outputs.body }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ steps.summary.outputs.body }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A docs amc_all_documentation.md
+          if git diff --cached --quiet; then
+            echo "変更なし"
+            echo "operation=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git switch -c docs-update
+          git commit -q -m "AMC公式ドキュメントの更新"
+          git push -f origin docs-update
+          url=$(gh pr list --head docs-update --state open --json url -q '.[0].url')
+          if [ -n "$url" ]; then
+            gh pr edit "$url" --body "$PR_BODY"
+            echo "operation=updated" >> "$GITHUB_OUTPUT"
+          else
+            url=$(gh pr create --base "${{ github.event.repository.default_branch }}" --head docs-update \
+              --title "AMC公式ドキュメントの更新" --body "$PR_BODY")
+            echo "operation=created" >> "$GITHUB_OUTPUT"
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "PR: $url"
 
       - name: Slackに通知（変更あり）
-        if: env.SLACK_WEBHOOK_URL != '' && (steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated')
+        if: env.SLACK_WEBHOOK_URL != '' && (steps.pr.outputs.operation == 'created' || steps.pr.outputs.operation == 'updated')
         run: |
           text=$(printf '📄 AMC公式ドキュメントに変更がありました\n追加 %s ／ 変更 %s ／ 削除 %s\nPR：%s' \
             "${{ steps.summary.outputs.added }}" "${{ steps.summary.outputs.modified }}" \
-            "${{ steps.summary.outputs.deleted }}" "${{ steps.pr.outputs.pull-request-url }}")
+            "${{ steps.summary.outputs.deleted }}" "${{ steps.pr.outputs.url }}")
           jq -n --arg text "$text" '{text: $text}' | curl -sS -X POST -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL"
 
       - name: Slackに通知（取得失敗）
