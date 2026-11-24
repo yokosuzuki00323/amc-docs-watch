@@ -1,0 +1,60 @@
+name: AMCドキュメントの週次チェック
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"   # 毎週月曜 9:00（日本時間）。GitHubの混雑で数十分遅れることがある
+  workflow_dispatch:       # Actions画面から手動でも実行できる
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: ライブラリとブラウザの準備
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: ドキュメントを取得
+        run: python scrape.py
+
+      - name: 変更ページの一覧を作る
+        id: summary
+        run: |
+          git add -A docs amc_all_documentation.md
+          {
+            echo 'body<<END_OF_BODY'
+            echo 'AMC公式ドキュメントに変更がありました。差分は「Files changed」で確認できます。'
+            echo ''
+            echo '| 種類 | ページ |'
+            echo '| --- | --- |'
+            git diff --cached --name-status -- docs \
+              | sed -E 's#^A\tdocs/#| 追加 | #; s#^M\tdocs/#| 変更 | #; s#^D\tdocs/#| 削除 | #; s#$# |#'
+            echo ''
+            echo 'マージ後、amc_all_documentation.md をダウンロードし、ドライブの既存ファイルに「新しい版」としてアップロードしてください。'
+            echo 'END_OF_BODY'
+          } >> "$GITHUB_OUTPUT"
+          git reset -q
+
+      - name: 変更があればPRを作成
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: docs-update
+          delete-branch: true
+          add-paths: |
+            docs/**
+            amc_all_documentation.md
+          commit-message: AMC公式ドキュメントの更新
+          title: AMC公式ドキュメントの更新
+          body: ${{ steps.summary.outputs.body }}
